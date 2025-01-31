@@ -1,0 +1,12 @@
+[project]
+name = "linkbot"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "mysql-connector-python>=8.1.0",
+    "discord.py>=2.3.2",
+    "openai>=1.3.6",
+    "beautifulsoup4>=4.12.2",
+    "aiohttp>=3.8.5",
+    "python-dotenv>=1.0.0"
+]
