@@ -1,9 +1,9 @@
+# config.py (unchanged)
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Database
 DB_CONFIG = {
     'host': os.getenv('DB_HOST'),
     'user': os.getenv('DB_USER'),
@@ -11,10 +11,8 @@ DB_CONFIG = {
     'database': os.getenv('DB_SCHEMA')
 }
 
-# OpenAI/DeepSeek
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
-DEEPSEEK_MODEL = "deepseek/deepseek-r1:free"
-
-# Discord
+DEEPSEEK_MODEL = "deepseek/deepseek-chat"
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
-ALLOWED_CHANNELS = ['links', 'bot-commands']
+LINKS_CHANNEL = 'links'
+COMMAND_CHANNEL = 'bot-commands'

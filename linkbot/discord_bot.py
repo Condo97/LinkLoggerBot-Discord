@@ -1,121 +1,146 @@
+# discord_bot.py
 import discord
+import re
 from discord.ext import commands
-from config import DISCORD_TOKEN, ALLOWED_CHANNELS, DB_CONFIG
+from typing import List
+from config import DISCORD_TOKEN, LINKS_CHANNEL, COMMAND_CHANNEL, DB_CONFIG
 from linkbot.database import DBClient
-from linkbot.openai_client import ChatClient
+from linkbot.openai_client import OpenAIClient
 from linkbot.web_scraper import WebScraper
+from linkbot.models import Link
+from linkbot.backtick_scrubber import BacktickScrubber
 
 class LinkBot(commands.Bot):
-    def __init__(self, db_client, chat_client):
+    def __init__(self, db_client: DBClient, ai_client: OpenAIClient):
         intents = discord.Intents.default()
         intents.message_content = True
         super().__init__(command_prefix='!', intents=intents)
-        
         self.db = db_client
-        self.chat_client = chat_client
+        self.ai = ai_client
         self.scraper = WebScraper()
-        
+
     async def on_ready(self):
         print(f'Logged in as {self.user}')
-        
+
     async def on_message(self, message):
         if message.author == self.user:
             return
-            
+
+        if message.channel.name == COMMAND_CHANNEL:
+            await self.process_command(message)
+        else:
+            await self.process_shared_links(message)
+
+    async def process_shared_links(self, message):
+        urls = re.findall(r'https?://\S+', message.content)
+        if not urls:
+            return
+
+        links_channel = discord.utils.get(message.guild.channels, name=LINKS_CHANNEL)
+        if not links_channel:
+            return
+
+        async with links_channel.typing():
+            for url in urls:
+                try:
+                    content = await self.scraper.get_web_content(url)
+                    summary = await self.ai.generate_summary(content) if content else "No summary available"
+                    
+                    link_id = self.db.save_link(url, summary)
+                    
+                    if link_id != -1:
+                        # Format the URL as a markdown link to suppress preview
+                        formatted_url = f"[{url}]({url})"  # Hide preview while keeping it clickable
+                        await links_channel.send(
+                            f"New link saved {formatted_url} from {message.author.mention}"
+                        )
+                except Exception as e:
+                    print(f"Error processing link: {str(e)}")
+                    # Send link to links channel if there was an error processing
+                    formatted_url = f"[{url}]({url})"  # Hide preview while keeping it clickable
+                    await links_channel.send(
+                        f"New link saved {formatted_url} from {message.author.mention}"
+                    )
+
+    async def process_command(self, message):
         try:
-            # Get context and classify
-            context = await self._get_context(message.content)
-            classification = await self.chat_client.classify(message.content, context)
-            
-            # Safely access classification values
-            needs_scraping = classification.get('needs_scraping', []) or []
-            if needs_scraping:
-                await self._handle_scraping(needs_scraping)
+            async with message.channel.typing():  # Show typing in command channel
+                classification = await self.ai.classify_command(message.content)
                 
-            # Get updated context
-            updated_context = await self._get_context_with_classification(classification)
-            
-            # Generate and send response
-            response = await self.chat_client.completion(
-                message.content,
-                updated_context
-            )
-            await message.channel.send(response[:2000])
-            
-        except Exception as e:
-            print(f"Error processing message: {str(e)}")
-            await message.channel.send("⚠️ An error occurred while processing your request")
-            
-        except Exception as e:
-            print(f"Error processing message: {str(e)}")
-            await message.channel.send("Sorry, I encountered an error processing your request.")
+                if not isinstance(classification, dict):
+                    classification = {"command_type": "NONE"}
+                    
+                command_type = classification.get("command_type", "NONE")
+                timeframe_days = classification.get("timeframe_days")
+                max_results = classification.get("max_results")
 
-    async def _get_context_with_classification(self, classification: dict) -> list[str]:
-        """Get context based on classification parameters"""
-        days_ago = classification.get('link_query_days_ago_limit')
-        count_limit = classification.get('link_query_count_limit')
+                if command_type == "NONE":
+                    response = await self.ai.generate_response(message.content, [])
+                else:
+                    links = self.db.get_recent_links(
+                        days_ago=timeframe_days,
+                        limit=max_results
+                    )
+
+                    if not links:
+                        response = "No relevant links found in my records."
+                    else:
+                        try:
+                            context = await self._build_command_context(command_type, links, message.content)
+                            response = await self.ai.generate_response(message.content, context)
+                        except Exception as e:
+                            print(f"Context building failed: {str(e)}")
+                            response = "Error processing your request."
+
+                await message.channel.send(response[:2000])
+
+        except Exception as e:
+            print(f"Command processing error: {str(e)}")
+            await message.channel.send("⚠️ An error occurred while processing your request.")
+
+    def _get_links_for_command(self, classification: dict) -> list[Link]:
+        days = classification.get('timeframe_days')
+        limit = classification.get('max_results')
+        return self.db.get_recent_links(days_ago=days, limit=limit)
+
+    async def _build_command_context(self, command_type: str, links: list[Link], query: str) -> list[str]:
+        # link_ids = [str(link.link_id) for link in links]
+        formatted_links = []
+        for link in links:
+            string = ""
+            if link.link_id:
+                string += f"ID: {link.link_id} | "
+            if link.web_url:
+                string += f"URL: {link.web_url} | "
+            if link.summary:
+                string += f"Summary: {link.summary[:200]}"
+            formatted_links.append(string)
+
+        if command_type == 'SEARCH':
+            return formatted_links
+
+        relevant_ids = await self.ai.filter_relevant_links(query, formatted_links)
+        relevant_links = [link for link in links if str(link.link_id) in relevant_ids]
         
-        if days_ago:
-            links = self.db.get_recent_links(days_ago=days_ago)
-        elif count_limit:
-            links = self.db.get_recent_links(limit=count_limit)
-        else:
-            links = self.db.get_recent_links(limit=5)
-            
-        return [
-            f"Link {link.link_id}: {link.web_url}\nSummary: {link.summary}"
-            for link in links
-        ]
+        if command_type == 'SEARCH_AND_SCRAPE':
+            return await self._add_scraped_content(relevant_links)
+        
+        return formatted_links
 
-    async def _handle_scraping(self, link_ids: list[int]):
-        """Handle scraping of specified links"""
-        for link_id in link_ids:
-            link = self.db.get_link_by_id(link_id)
-            if link:
-                print(f"Scraping {link.web_url}")
-                content = await self.scraper.get_web_content(link.web_url)
-                if content:
-                    self.db.update_link_summary(link_id, content[:1000])
+    async def _add_scraped_content(self, links: list[Link]) -> list[str]:
+        context = []
+        for link in links:
+            content = await self.scraper.get_web_content(link.web_url)
+            context.append(
+                f"ID: {link.link_id} | URL: {link.web_url}\n"
+                f"Fresh Content: {content[:1000] if content else 'Unable to retrieve content'}"
+            )
+        return context
     
-    async def _get_context(self, message: str) -> list[str]:
-        """Get base context with recent links"""
-        # Get 5 most recent links by default
-        recent_links = self.db.get_recent_links(limit=5)
-        
-        # Format context entries
-        context_entries = [
-            f"Link ID: {link.link_id}\nURL: {link.web_url}\nSummary: {link.summary}\n"
-            for link in recent_links
-        ]
-        
-        # Add system message as first context entry
-        return [
-            "Current link context (most recent first):",
-            *context_entries
-        ]
-
-    async def _get_context_with_classification(self, classification: dict) -> list[str]:
-        """Get filtered context based on classification"""
-        # Get links based on classification parameters
-        if classification.get('link_query_days_ago_limit'):
-            links = self.db.get_recent_links(
-                days_ago=classification['link_query_days_ago_limit']
-            )
-        elif classification.get('link_query_count_limit'):
-            links = self.db.get_recent_links(
-                limit=classification['link_query_count_limit']
-            )
-        else:
-            links = self.db.get_recent_links(limit=3)  # Default to 3 links
-        
-        # Format context entries with scraped data
-        return [
-            f"Link ID: {link.link_id}\nURL: {link.web_url}\nSummary: {link.summary}\n"
-            for link in links
-        ]
+    import re
 
 def main():
-    db_client = DBClient(DB_CONFIG)
-    chat_client = ChatClient()
-    bot = LinkBot(db_client, chat_client)
+    db = DBClient(DB_CONFIG)
+    ai = OpenAIClient()
+    bot = LinkBot(db, ai)
     bot.run(DISCORD_TOKEN)

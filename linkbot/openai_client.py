@@ -1,108 +1,195 @@
+# openai_client.py (updated with error handling)
 from openai import AsyncOpenAI
 import json
+from typing import Dict, Any
 from config import OPENROUTER_API_KEY, DEEPSEEK_MODEL
+from linkbot.backtick_scrubber import BacktickScrubber
 
-class ChatClient:
+class OpenAIClient:
     def __init__(self):
         self.client = AsyncOpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=OPENROUTER_API_KEY,
         )
-    
-    async def classify(self, text: str, context: list) -> dict:
-        prompt = f"""
-        CLASSIFICATION PROTOCOL:
-        Analyze the message and respond with JSON containing:
-        {{
-            "command": "check_stock|price_history|compare_prices|add_calendar_event|request_summary|other",
-            "link_query_days_ago_limit": null|int,
-            "link_query_count_limit": null|int,
-            "needs_scraping": [link_ids]
-        }}
 
-        EXAMPLE RESPONSE:
-        {{
-            "command": "check_stock",
-            "link_query_days_ago_limit": 7,
-            "needs_scraping": [42, 15]
-        }}
+    async def classify_command(self, query: str) -> Dict[str, Any]:
+        """Classify user command with robust error handling"""
+        default_response = {"command_type": "NONE"}
+        # tools = [{
+        #     "type": "function",
+        #     "function:": {
+        #         "name": "classify_user_intent",
+        #         "description": "Determine how to process user request",
+        #         "parameters": {
+        #             "type": "object",
+        #             "properties": {
+        #                 "command_type": {
+        #                     "type": "string",
+        #                     "enum": ["SEARCH_AND_SCRAPE", "SEARCH", "NONE"],
+        #                     "description": "Type of command to execute. Search functionality searches a database of links using the user's query from optional timeframe_days ago and/or/neither optional returning max_results. Scrape adds additional functionality to scrape the websites for updated data but adds delay and token cost so use if necessary."
+        #                 },
+        #                 "timeframe_days": {
+        #                     "type": "integer",
+        #                     "description": "Time window to search in days null to only limit by max_results or both null to include all results"
+        #                 },
+        #                 "max_results": {
+        #                     "type": "integer",
+        #                     "description": "Maximum number of results to return if needed null to only limit by timeframe_days or both null to include all results"
+        #                 }
+        #             },
+        #             "required": ["command_type"]
+        #         }
+        #     }
+        # }]
 
-        CONTEXT:
-        {''.join(context)}
+        system_prompt = """
+Determine how to process the user request.
 
-        MESSAGE TO CLASSIFY:
-        {text}
+CommandTypes
+{
+    SEARCH_AND_SCRAPE,
+    SEARCH,
+    NONE
+}
+
+JSON OUTPUT:
+{
+    "command_type": CommandTypes as string,
+    "timeframe_days": integer,
+    "max_results": integer
+}
+
+REQUIRED: command_type
+OPTIONAL: timeframe_days, max_results
+
+command_type is the type of command to execute. Search functionality searches a database of links using the user's query from optional timeframe_days ago and/or/neither optional returning max_results. Scrape adds additional functionality to scrape the websites for updated data but adds delay and token cost so use if necessary. None does no operation. They all are to form another chat input for another call to DeepSeek so none will just do the operation with only the prompt while the others will use the prompt with their collected data.
+
+timeframe_days is the time window to search in days null to only limit by max_results or both null to include all results
+
+max_results is the maximum number of results to return if needed null to only limit by timeframe_days or both null to include all results
         """
 
         try:
             response = await self.client.chat.completions.create(
                 model=DEEPSEEK_MODEL,
                 messages=[
-                    {
-                        "role": "system", 
-                        "content": "You are a classification bot that ONLY outputs valid JSON"
-                    },
-                    {"role": "user", "content": prompt}
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": query}
                 ],
-                temperature=0.1,
-                response_format={"type": "json_object"}
+                response_format={
+                    'type': 'json_object'
+                }
+                # tools=tools,
+                # tool_choice=[{"name": "classify_user_intent"}]
             )
-            
-            response_text = response.choices[0].message.content
-            
-            # Clean response text
-            cleaned_response = response_text.replace('```json', '').replace('```', '').strip()
-            print(f"Cleaned classification response: {cleaned_response}")
-            
-            classification = json.loads(cleaned_response)
-            
-            # Validate required keys
-            required_keys = ['command', 'needs_scraping']
-            for key in required_keys:
-                if key not in classification:
-                    raise KeyError(f"Missing required key: {key}")
-                    
-            # Ensure list types
-            classification['needs_scraping'] = classification.get('needs_scraping', []) or []
-            classification['command'] = classification.get('command', 'other').lower()
-            
-            return classification
-            
-        except json.JSONDecodeError as e:
-            print(f"JSON parse error: {e}\nResponse content: {cleaned_response}")
-            return {
-                "command": "other",
-                "link_query_days_ago_limit": None,
-                "link_query_count_limit": None,
-                "needs_scraping": []
-            }
-        except KeyError as e:
-            print(f"Missing key in classification: {e}")
-            return {
-                "command": "other",
-                "link_query_days_ago_limit": None,
-                "link_query_count_limit": None,
-                "needs_scraping": []
-            }
         except Exception as e:
-            print(f"Classification error: {str(e)}")
+            print(f"API request failed: {str(e)}")
+            return default_response
+
+        try:
+            print(response)
+            if not response or not response.choices:
+                return default_response
+            
+            message = BacktickScrubber.scrub_json_backticks(response.choices[0].message.content)
+            if not message:
+                return default_response
+
+            args = json.loads(message)
             return {
-                "command": "other",
-                "link_query_days_ago_limit": None,
-                "link_query_count_limit": None,
-                "needs_scraping": []
+                "command_type": args.get("command_type", "NONE"),
+                "timeframe_days": args.get("timeframe_days"),
+                "max_results": args.get("max_results")
             }
-    
-    async def completion(self, text: str, context: list) -> str:
-        messages = [
-            {"role": "system", "content": "You are a helpful shopping assistant. Use the following context:"},
-            {"role": "system", "content": "\n".join(context)},
-            {"role": "user", "content": text}
-        ]
+        except json.JSONDecodeError:
+            print("Failed to parse function arguments")
+            return default_response
+        except (KeyError, IndexError, AttributeError) as e:
+            print(f"Invalid response structure: {str(e)}")
+            return default_response
+
+    async def generate_summary(self, content: str) -> str:
+        response = await self.client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=[{
+                "role": "user",
+                "content": f"Generate concise summary (max 200 words): {content[:3000]}"
+            }],
+            temperature=0.3,
+            max_tokens=3500
+        )
+        print(response)
+        return response.choices[0].message.content.strip()
+
+    async def filter_relevant_links(self, query: str, links: list[str]) -> list[int]:
+        # tools = [{
+        #     "type": "function",
+        #     "function:": {
+        #         "name": "return_relevant_links",
+        #         "description": "Return IDs of relevant links based on query",
+        #         "parameters": {
+        #             "type": "object",
+        #             "properties": {
+        #                 "link_ids": {
+        #                     "type": "array",
+        #                     "items": {"type": "integer"},
+        #                     "description": "Relevant link IDs"
+        #                 }
+        #             },
+        #             "required": ["link_ids"]
+        #         }
+        #     }
+        # }]
+        system_prompt = """
+Return IDs of relevant links based on query.
+
+JSON OUTPUT:
+{
+    "link_ids": string[]
+}
+
+REQUIRED: link_ids
+
+link_ids are the relevant link IDs.
+        """
+
+        response = await self.client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Query: {query}\nLinks:\n{chr(10).join(links)}"}
+            ]
+        )
+
+        print("Response\n", response)
+        
+        message = BacktickScrubber.scrub_json_backticks(response.choices[0].message.content)
+
+        print("Message:\n", message)
+        if message:
+            args = json.loads(message)
+            return args.get("link_ids", [])
+        return []
+        
+
+    async def generate_response(self, query: str, context: list[str]) -> str:
+        messages = [{
+            "role": "system",
+            "content": "You are a helpful assistant. Use provided context where relevant."
+        }]
+        
+        if context:
+            messages.append({
+                "role": "system",
+                "content": "CONTEXT:\n" + "\n\n".join(context)
+            })
+            
+        messages.append({"role": "user", "content": query})
         
         response = await self.client.chat.completions.create(
             model=DEEPSEEK_MODEL,
             messages=messages,
-            temperature=0.7
+            temperature=0.6,
+            max_tokens=3500
         )
         return response.choices[0].message.content
