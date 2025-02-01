@@ -13,7 +13,7 @@ DB_CONFIG = {
 
 # OpenAI/DeepSeek
 OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
-DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_MODEL = "deepseek/deepseek-r1:free"
 
 # Discord
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
