@@ -1,9 +1,12 @@
 pyproject.toml
 linkbot/__init__.py
 linkbot/__main__.py
+linkbot/backtick_scrubber.py
+linkbot/channel_exclusion.py
+linkbot/config.py
 linkbot/database.py
 linkbot/discord_bot.py
-linkbot/link_logger.py
+linkbot/link_categorizer.py
 linkbot/models.py
 linkbot/openai_client.py
 linkbot/web_scraper.py

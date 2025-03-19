@@ -7,5 +7,6 @@ class Link:
     link_id: int
     web_url: str
     summary: str
+    category: str
     creation_date: datetime
-    is_active: bool = True
+    deleted: bool = False

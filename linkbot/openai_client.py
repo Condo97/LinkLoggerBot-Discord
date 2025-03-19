@@ -2,8 +2,9 @@
 from openai import AsyncOpenAI
 import json
 from typing import Dict, Any
-from config import OPENROUTER_API_KEY, DEEPSEEK_MODEL
+from linkbot.config import OPENROUTER_API_KEY, DEEPSEEK_MODEL
 from linkbot.backtick_scrubber import BacktickScrubber
+from linkbot.link_categorizer import LinkCategorizer
 
 class OpenAIClient:
     def __init__(self):
@@ -87,7 +88,6 @@ max_results is the maximum number of results to return if needed null to only li
             return default_response
 
         try:
-            print(response)
             if not response or not response.choices:
                 return default_response
             
@@ -108,18 +108,32 @@ max_results is the maximum number of results to return if needed null to only li
             print(f"Invalid response structure: {str(e)}")
             return default_response
 
-    async def generate_summary(self, content: str) -> str:
-        response = await self.client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
-            messages=[{
-                "role": "user",
-                "content": f"Generate concise summary (max 200 words): {content[:3000]}"
-            }],
-            temperature=0.3,
-            max_tokens=3500
-        )
-        print(response)
-        return response.choices[0].message.content.strip()
+    async def generate_summary(self, content: str) -> tuple[str, str]:
+        """Generate summary and category for content"""
+        system_msg = f"""Analyze this content and provide:
+1. Concise summary (max 200 words)
+2. Category from: {", ".join(LinkCategorizer.CATEGORIES)}
+
+Respond ONLY with JSON format: {{"summary": "...", "category": "..."}}"""
+
+        try:
+            response = await self.client.chat.completions.create(
+                model=DEEPSEEK_MODEL,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": content[:10000]}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.3
+            )
+            result = json.loads(response.choices[0].message.content)
+            return (
+                result.get("summary", "No summary available"),
+                result.get("category", "other").lower()
+            )
+        except Exception as e:
+            print(f"Summary generation error: {str(e)}")
+            return ("No summary available", "other")
 
     async def filter_relevant_links(self, query: str, links: list[str]) -> list[int]:
         # tools = [{
