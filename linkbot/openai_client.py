@@ -191,7 +191,7 @@ link_ids are the relevant link IDs.
 
         messages = [{
             "role": "system",
-            "content": "You are a helpful assistant. Use provided context where relevant."
+            "content": "You are a helpful assistant. Use provided context where relevant. Always cite links when given, make sure they are in discord format as hyperlinks."
         }]
         
         if context:

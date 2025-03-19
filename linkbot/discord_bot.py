@@ -339,15 +339,17 @@ class LinkBot(commands.Bot):
                             print("\nContext sent to AI:")
                             for idx, item in enumerate(context, 1):
                                 print(f"\nContext Item {idx}:")
-                            print(f"{'-'*40}")
-                            print(item.strip())
-                            print(f"{'-'*40}")
+                                print(f"{'-'*40}")
+                                print(item.strip())
+                                print(f"{'-'*40}")
                             response = await self.ai.generate_response(message.content, context)
                         except Exception as e:
                             print(f"Context building failed: {str(e)}")
                             response = "Error processing your request."
 
-                await message.channel.send(response[:2000])
+                # Split long messages into Discord-friendly chunks
+                for chunk in self.split_message(response):
+                    await message.channel.send(chunk)
 
         except Exception as e:
             print(f"Command processing error: {str(e)}")
@@ -417,6 +419,21 @@ class LinkBot(commands.Bot):
             url = url[:-1]
         
         return url
+
+    def split_message(self, text: str, max_len: int = 2000) -> list[str]:
+        """Split text into chunks that respect word boundaries and Discord's message limits"""
+        if len(text) <= max_len:
+            return [text]
+        
+        chunks = []
+        while text:
+            # Find last space within limit
+            split_at = text.rfind(' ', 0, max_len)
+            if split_at == -1:  # No space found, force split
+                split_at = max_len
+            chunks.append(text[:split_at].strip())
+            text = text[split_at:].strip()
+        return chunks
 
     def _format_display_links(self, links: List[Link]) -> str:
         if not links:
