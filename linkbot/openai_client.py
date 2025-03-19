@@ -187,6 +187,8 @@ link_ids are the relevant link IDs.
         
 
     async def generate_response(self, query: str, context: list[str]) -> str:
+        print(context)
+
         messages = [{
             "role": "system",
             "content": "You are a helpful assistant. Use provided context where relevant."

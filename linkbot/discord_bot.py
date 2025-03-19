@@ -4,7 +4,7 @@ import discord
 import re
 from discord.ext import commands
 from typing import List, Optional
-from linkbot.config import DISCORD_TOKEN, LINKS_CHANNEL, COMMAND_CHANNEL, PRODUCTS_CHANNEL, DB_CONFIG
+from linkbot.config import DISCORD_TOKEN, LINKS_CHANNEL, COMMAND_CHANNEL, PRODUCTS_CHANNEL, DB_CONFIG, CONTEXT_MESSAGE_COUNT
 from linkbot.channel_exclusion import ChannelExclusionService
 from linkbot.database import DBClient
 from linkbot.openai_client import OpenAIClient
@@ -95,6 +95,13 @@ class LinkBot(commands.Bot):
                 await channel.send("An error occurred while processing that reaction.", delete_after=5)
 
     ### Logic
+
+    async def get_channel_context(self, channel, limit: int) -> List[str]:
+        """Retrieve channel message history for AI context"""
+        messages = []
+        async for message in channel.history(limit=limit):
+            messages.append(f"{message.author.display_name}: {message.content}")
+        return messages[::-1]  # Return in chronological order
 
     async def process_shared_links(self, message):
         # Check if channel is excluded
@@ -307,7 +314,14 @@ class LinkBot(commands.Bot):
                 print(f"Classification: {classification}")
 
                 if command_type == "NONE":
-                    response = await self.ai.generate_response(message.content, [])
+                    # Get adjustable number of context messages from config
+                    context_messages = []
+                    if message.channel.name == COMMAND_CHANNEL:
+                        context_messages = await self.get_channel_context(
+                            message.channel,
+                            limit=CONTEXT_MESSAGE_COUNT
+                        )
+                    response = await self.ai.generate_response(message.content, context_messages)
                 else:
                     links = self.db.get_recent_links(
                         days_ago=timeframe_days,
